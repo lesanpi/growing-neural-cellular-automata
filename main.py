@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as f
+import torch.optim as optim
 import math
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,7 +22,6 @@ cellId = torch.from_numpy(np.array(
 
 filters = [sobelX, sobelY, cellId]
 
-
 grid = np.zeros((width, height, N_CHANNELS))
 
 
@@ -34,6 +34,7 @@ class UpdateGrid(nn.Module):
         # el tablero
         self.fc1 = nn.Conv2d(N_CHANNELS * len(filters), 128, (1, 1))
         self.fc2 = nn.Conv2d(128, N_CHANNELS, (1, 1))
+        torch.nn.init.zeros_(self.fc2.weight)
 
     def forward(self, x):
 
@@ -42,6 +43,7 @@ class UpdateGrid(nn.Module):
         # Los 16 canales son para cada filtro.
         perception = torch.empty((1, len(filters) * N_CHANNELS, width, height))
 
+        # Filtros
         for n, filt in enumerate(filters):
             perception[:, n * N_CHANNELS:
                        (n + 1) * N_CHANNELS, :, :] = f.conv2d(x, filt, padding=[1, 1])
@@ -60,30 +62,54 @@ class UpdateGrid(nn.Module):
         alive = f.conv2d((x[:, 3:4, :, :] > 0.1).type(torch.int), torch.from_numpy(
             np.ones((1, 1, 3, 3)).astype(int)), padding=1)
 
-        alive = (alive > 0).type(torch.int)
+        alive = (alive > 0.0).type(torch.int)
 
         return x * alive.repeat(1, 16, 1, 1)
 
 
 im = Image.open('wow.png')
-
-grid[:, :, 0:4] = np.array(im) / 255
+# Imagen objetivo.
+target = torch.tensor(np.array(im) / 255)
 
 # NN
 updateGrid = UpdateGrid()
+# Loss Function
+loss_f = nn.MSELoss()
+# Creando el optimizador.
+optimizer = optim.Adam(updateGrid.parameters(), lr=1e-5)
 
-result = updateGrid.forward(torch.from_numpy(
-    grid).view((1, width, height, N_CHANNELS)).permute(0, 3, 1, 2))
+# Training loop
+for trStep in range(1000):
 
-for step in range(500):
+    # Numero de pasos aleatorios.
+    n_steps = np.random.randint(64, 96)
+    debug = n_steps - 1
 
-    if step == 0:
-        result = updateGrid.forward(torch.from_numpy(
-            grid).view((1, width, height, N_CHANNELS)).permute(0, 3, 1, 2))
-    else:
-        result = updateGrid.forward(result)
+    # Inicializar la grilla con una sola celula en el centro.
+    grid = np.zeros((width, height, N_CHANNELS))
+    grid[height // 2, width // 2, 3:] = 1
+    # La imagen sin pasar por la NN
+    result = torch.from_numpy(
+        grid).view((1, width, height, N_CHANNELS)).permute(0, 3, 1, 2)
 
-    imgRes = result[0, 0:4, :, :].detach().numpy().transpose(1, 2, 0)
+    for step in range(n_steps):
 
-    plt.imshow(imgRes)
-    plt.show()
+        result = torch.clamp(updateGrid.forward(result), 0.0, 1.0)
+
+        # Muestra el estado cada n veces.
+        if step + 1 == n_steps:
+
+            imgRes = np.clip(result[0, 0:4, :, :].detach(
+            ).numpy().transpose(1, 2, 0)[:, :, :4], 0.0, 1.0)
+            plt.imshow(imgRes)
+            plt.show()
+
+    output = result[0, 0:4, :, :].transpose(0, 2)
+    # Entrenamiento.
+    optimizer.zero_grad()
+    loss = loss_f(output, target)
+    loss.backward()
+    optimizer.step()
+
+    # Print
+    print("Tr. Step: " + str(trStep) + " Training loss: " + str(loss))
